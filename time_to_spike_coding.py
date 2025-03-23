@@ -1,117 +1,54 @@
 """
-Module for Time-to-First-Spike (TTFS) Coding.
+time_to_spike_coding.py
 
-This module implements the TTFS coding scheme described in:
-"Neural Coding in Spiking Neural Networks: A Comparative Study for Robust Neuromorphic Systems" by Guo et al.
+TTFSCoding:
+- Encodes pixel intensity into the time of a single spike within the simulation window.
+- Brighter pixels (intensity near 1) fire very early.
+- Darker pixels (intensity near 0) fire later or may not fire if time exceeds the set max_time window.
 
-Time-to-First-Spike (TTFS) Coding:
-----------------------------------
-1. Normalize each pixel by dividing by the maximum (e.g., 255 for 8-bit images).
-2. At discrete simulation step i, the continuous time is t = i * dt (seconds).
-3. Compute threshold:
-       P_th(t) = theta0 * exp(-t / tau_th) - given in the paper
-   where tau_th is the time constant in seconds, theta0 ~ 1.0 by default as mentioned in the paper.
-4. A pixel fires its first spike at step i if:
-       pixel_value_norm > P_th(i)
-   After firing once, that pixel is inhibited (no further spikes).
-
-Usage Example:
-    from ttfs_coding import TTFSCoding
-    coder = TTFSCoding(dt=0.001, duration=0.02, tau_th=0.006, theta0=1.0)
-    spike_train = coder.encode(image)
+By default, max_time is 20 ms (0.02 s), so all spikes occur in [0, 20 ms].
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
-
 
 class TTFSCoding:
-    """
-    Implements Time-to-First-Spike coding for a 2D image input.
-
-    Attributes:
-        dt (float): Time step in seconds (e.g., 0.001 for 1 ms).
-        duration (float): Total simulation time in seconds.
-        tau_th (float): Time constant in seconds for exponential threshold decay.
-        theta0 (float): Initial threshold constant (often set to 1.0).
-        num_steps (int): Number of discrete time steps = round(duration / dt).
-    """
-
-    def __init__(self, dt=0.001, duration=0.02, tau_th=0.006, theta0=1.0):
+    def __init__(self, duration=0.1, dt=0.001, max_time=0.02):
         """
-        Initialize TTFSCoding with user-defined parameters.
-
-        Parameters:
-            dt (float): Simulation time step in seconds.
-            duration (float): Total duration of the encoding in seconds.
-            tau_th (float): Threshold decay time constant (in seconds).
-            theta0 (float): Initial threshold constant.
+        duration: total simulation time in seconds (e.g., 0.1 for 100 ms).
+        dt: time step in seconds (e.g., 0.001 for 1 ms).
+        max_time: maximum time (in seconds) when a spike can occur.
+                  By default, 0.02 = 20 ms, so all spikes happen within the first 20 ms.
         """
-        self.dt = dt
         self.duration = duration
-        self.tau_th = tau_th
-        self.theta0 = theta0
-        self.num_steps = int(np.round(duration / dt))
+        self.dt = dt
+        self.max_time = max_time
 
     def encode(self, image):
         """
-        Encode a 2D image into a TTFS spike train.
-
-        1. Normalize the image to [0, 1].
-        2. For each time step i, compute the threshold P_th(i) = theta0 * exp(-(i*dt)/tau_th).
-        3. Any pixel whose normalized intensity > P_th(i) fires a spike (if it has not fired before).
-
-        Parameters:
-            image (numpy.ndarray): 2D array of pixel intensities (e.g., shape [H, W], range [0..255]).
+        image: 2D array (28x28) with values in [0,1].
 
         Returns:
-            numpy.ndarray of shape (H, W, num_steps), with boolean entries indicating spike occurrences.
-            Typically, each pixel will fire at most once (True at exactly one time step).
+        spike_times_list: list of arrays, each array contains the single spike time for one neuron.
         """
-        # 1. Normalize pixel values to [0,1] (assuming 8-bit 0..255)
-        norm_image = image.astype(np.float32) / 255.0
+        # Flatten the image to a 1D array of 784 pixels
+        flat_image = image.flatten()
 
-        height, width = norm_image.shape
-        spike_train = np.zeros((height, width, self.num_steps), dtype=bool)
+        spike_times_list = []
 
-        # Keep track of which pixels have already fired
-        has_fired = np.zeros((height, width), dtype=bool)
+        for pixel_value in flat_image:
+            if pixel_value > 0:
+                # Map pixel_value (0..1) to spike_time in [0..max_time].
+                # Bright pixels (near 1) spike near 0 ms, dark pixels (near 0) spike near max_time.
+                # Using (1 - pixel_value) ensures brighter pixels fire earlier.
+                spike_time = (1.0 - pixel_value) * self.max_time
 
-        # 2. Iterate through each discrete time step
-        for step in range(self.num_steps):
-            t = step * self.dt  # continuous time in seconds
-            # P_th(t) = theta0 * exp(- t / tau_th)
-            p_th = self.theta0 * np.exp(-t / self.tau_th)
+                # Only add the spike if it occurs before the total duration
+                if spike_time <= self.duration:
+                    spike_times_list.append(np.array([spike_time]))
+                else:
+                    spike_times_list.append(np.array([]))
+            else:
+                # No spike for pixel_value = 0
+                spike_times_list.append(np.array([]))
 
-            # Identify pixels that haven't fired yet and exceed the threshold
-            can_fire = (~has_fired) & (norm_image > p_th)
-            # Mark those as firing at this step
-            spike_train[can_fire, step] = True
-            # Inhibit further firing from these pixels
-            has_fired[can_fire] = True
-
-        return spike_train
-
-
-# Example usage / quick test
-if __name__ == "__main__":
-    # Create a dummy image (28x28) with random values between 0 and 255
-    dummy_image = np.random.randint(0, 256, (28, 28), dtype=np.uint8)
-
-    # Initialize TTFS coder with example parameters
-    # (Try adjusting dt, duration, tau_th, etc. to see the effect.)
-    coder = TTFSCoding(dt=0.001, duration=0.02, tau_th=0.006, theta0=1.0)
-
-    # Encode the dummy image
-    spike_train = coder.encode(dummy_image)
-
-    # Choose a pixel to visualize
-    row, col = 14, 14
-    pixel_spikes = spike_train[row, col, :].astype(int)
-
-    plt.figure()
-    plt.stem(np.arange(len(pixel_spikes)), pixel_spikes, basefmt=" ")
-    plt.xlabel("Time step")
-    plt.ylabel("Spike (1: spike, 0: no spike)")
-    plt.title(f"TTFS Spike Train for Pixel ({row}, {col})")
-    plt.show()
+        return spike_times_list
